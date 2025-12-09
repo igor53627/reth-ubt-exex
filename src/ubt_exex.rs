@@ -83,13 +83,14 @@ impl UbtExEx {
                 );
 
                 info!("Verifying UBT root via streaming; this may take a while on large state");
-                if verify_root_streaming(&db, head.root)? {
+                let computed = compute_root_streaming(&db)?;
+                if computed == head.root {
                     info!("Streaming root verification passed");
                 } else {
-                    warn!(
-                        expected = %head.root,
-                        "Streaming root verification failed - database may be inconsistent"
-                    );
+                    return Err(crate::error::UbtError::RootVerificationFailed {
+                        expected: format!("{}", head.root),
+                        computed: format!("{}", computed),
+                    });
                 }
 
                 (
@@ -182,6 +183,12 @@ impl UbtExEx {
         Ok(())
     }
 
+    /// Commit pending entries to the UBT state for the given block.
+    ///
+    /// Returns the UBT root hash. Note: the returned root is only updated on flush
+    /// (every `flush_interval` blocks). Between flushes, returns the last persisted root.
+    /// This is a performance optimization - the true tip root could be computed on demand
+    /// but would require merging dirty overlay with MDBX for every block.
     pub fn commit(&mut self, block_number: u64, block_hash: B256) -> Result<B256> {
         let entries = std::mem::take(&mut self.pending_entries);
         let entry_count = entries.len();
@@ -286,6 +293,14 @@ impl UbtExEx {
         }
     }
 
+    /// Revert the UBT state for the given chain of blocks.
+    ///
+    /// Applies stored deltas in reverse order to restore previous values.
+    ///
+    /// Note: `stem_count` is not decremented during reverts, so it may be slightly
+    /// inflated after reorgs. This is a known limitation - accurate stem counting
+    /// would require scanning MDBX which is expensive. The count is reset on restart
+    /// from the persisted head.
     pub fn revert(&mut self, chain: &Chain<impl NodePrimitives>) -> Result<()> {
         let blocks = chain.blocks();
         let mut block_numbers: Vec<u64> = blocks.keys().copied().collect();
@@ -433,11 +448,11 @@ impl UbtExEx {
     }
 }
 
-/// Verify root hash using streaming computation with parallel hashing.
-fn verify_root_streaming(db: &UbtDatabase, expected_root: B256) -> Result<bool> {
+/// Compute root hash from MDBX using streaming builder with parallel hashing.
+fn compute_root_streaming(db: &UbtDatabase) -> Result<B256> {
     let entries = db.iter_entries_sorted()?;
-    let computed = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
-    Ok(computed == expected_root)
+    let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
+    Ok(root)
 }
 
 const KECCAK_EMPTY: B256 = B256::new([
