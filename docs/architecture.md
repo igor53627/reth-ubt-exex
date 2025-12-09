@@ -192,7 +192,7 @@ Phase 2 (P2): Memory Optimization
 
 Phase 3 (P3): Advanced Optimizations
 |-- #4 Incremental root updates        [OPEN] - requires ubt crate changes
-+-- #7 Parallel hashing                [OPEN]
++-- #7 Parallel hashing                [DONE] - rayon for stem hashing
 ```
 
 ## UBT Key Layout (EIP-7864)

@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - All reads via dirty overlay + MDBX fallback
   - Root computed via streaming from MDBX (memory spike during computation only)
   - Baseline memory now <1GB instead of ~80GB+ for Sepolia
+- Parallel stem hashing (#7) - uses rayon for multi-core root computation
+  - Enabled `parallel` feature in ubt dependency
+  - Switched to `build_root_hash_parallel` for both root computation and verification
+  - Stem hashing distributed across cores, tree building remains sequential
 
 ### Fixed
 - Proper reorg handling with per-block deltas (#3)

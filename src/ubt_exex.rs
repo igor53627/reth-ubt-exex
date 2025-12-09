@@ -419,22 +419,22 @@ impl UbtExEx {
         Ok(())
     }
 
-    /// Compute root hash from MDBX entries using streaming builder.
+    /// Compute root hash from MDBX entries using streaming builder with parallel hashing.
     ///
     /// This reads all entries from MDBX and computes the root without
-    /// keeping the full tree in memory. Note: still creates a Vec of
-    /// all entries, so memory spikes during computation.
+    /// keeping the full tree in memory. Uses rayon for parallel stem hashing.
+    /// Note: still creates a Vec of all entries, so memory spikes during computation.
     fn compute_root_streaming(&self) -> Result<B256> {
         let entries = self.db.iter_entries_sorted()?;
-        let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash(entries);
+        let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
         Ok(root)
     }
 }
 
-/// Verify root hash using streaming computation (memory-efficient).
+/// Verify root hash using streaming computation with parallel hashing.
 fn verify_root_streaming(db: &UbtDatabase, expected_root: B256) -> Result<bool> {
     let entries = db.iter_entries_sorted()?;
-    let computed = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash(entries);
+    let computed = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
     Ok(computed == expected_root)
 }
 
