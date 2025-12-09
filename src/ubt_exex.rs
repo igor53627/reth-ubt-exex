@@ -327,7 +327,7 @@ impl UbtExEx {
                 );
             }
 
-            self.apply_deltas_reverse(*block_number, &deltas)?;
+            self.apply_deltas_reverse(&deltas)?;
             total_reverted += deltas.len();
 
             if *block_number > self.last_persisted_block {
@@ -447,10 +447,8 @@ impl UbtExEx {
     /// This is the core logic shared by revert operations. Given a list of deltas
     /// (stem, subindex, old_value), applies them in reverse order to restore
     /// previous values.
-    #[allow(dead_code)]
     pub(crate) fn apply_deltas_reverse(
         &mut self,
-        block_number: u64,
         deltas: &[(Stem, u8, B256)],
     ) -> Result<()> {
         for (stem, subindex, old_value) in deltas.iter().rev() {
@@ -699,7 +697,7 @@ pub mod tests {
         let deltas = harness.exex.db.load_block_deltas(2).expect("load deltas");
         harness
             .exex
-            .apply_deltas_reverse(2, &deltas)
+            .apply_deltas_reverse(&deltas)
             .expect("apply_deltas_reverse");
 
         let dirty: Vec<_> = harness.exex.dirty_stems.drain().collect();

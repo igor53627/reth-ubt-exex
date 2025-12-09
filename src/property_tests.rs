@@ -32,7 +32,7 @@ proptest! {
         harness.apply_entries_block(1, make_block_hash(1), entries);
 
         let deltas = harness.exex.db.load_block_deltas(1).unwrap();
-        harness.exex.apply_deltas_reverse(1, &deltas).unwrap();
+        harness.exex.apply_deltas_reverse(&deltas).unwrap();
 
         let dirty: Vec<_> = harness.exex.dirty_stems.drain().collect();
         harness.exex.db.batch_update_stems(&dirty).unwrap();
@@ -69,7 +69,7 @@ proptest! {
         let root_after_bn = harness.snapshot_root();
 
         let deltas = harness.exex.db.load_block_deltas(bn).unwrap();
-        harness.exex.apply_deltas_reverse(bn, &deltas).unwrap();
+        harness.exex.apply_deltas_reverse(&deltas).unwrap();
 
         let dirty: Vec<_> = harness.exex.dirty_stems.drain().collect();
         harness.exex.db.batch_update_stems(&dirty).unwrap();
@@ -209,7 +209,7 @@ proptest! {
                 let key = TreeKey { stem: *stem, subindex: *subindex };
                 model.insert(key, *old_value);
             }
-            harness.exex.apply_deltas_reverse(bn, &deltas).unwrap();
+            harness.exex.apply_deltas_reverse(&deltas).unwrap();
         }
 
         let dirty: Vec<_> = harness.exex.dirty_stems.drain().collect();
