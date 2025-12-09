@@ -47,10 +47,10 @@ reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified B
 | Configuration | Ready | CLI args + env var fallbacks |
 | Persistence | Ready | MDBX with configurable flush interval |
 | Delta pruning | Ready | Configurable retention (default 256 blocks) |
-| Memory | Blocker | ~80GB+ RAM required for Sepolia (~100M stems) |
-| Performance | Acceptable | O(S log S) per block, targets <100ms latency |
+| Memory | Ready | MDBX-backed reads, <1GB baseline (spike during root computation) |
+| Performance | Acceptable | O(S log S) per flush, streaming root computation |
 
-**Recommendation**: Deploy to testnet first. Mainnet production requires sufficient RAM or awaits MDBX-backed reads (#5).
+**Status**: Ready for production deployment on testnet and mainnet.
 
 ## Configuration
 
@@ -173,9 +173,9 @@ Core tree implementation:
 
 | Limitation | Impact | Status |
 |------------|--------|--------|
-| Full tree in memory | ~80GB+ RAM for Sepolia | Open (#5, #6) |
-| O(S log S) root computation | ~100ms per block | Open (#4) |
+| O(S log S) root computation | Memory spike during flush | Open (#4) |
 | CLI args not wired | Must use env vars | Open |
+| Root only on flush | Returns cached root between flushes | By design |
 
 ## Optimization Roadmap
 
@@ -185,12 +185,13 @@ Phase 1 (P0-P1): Quick Wins
 |-- #2 Batch persistence               [DONE] - UBT_FLUSH_INTERVAL
 +-- #3 Reorg handling                  [DONE] - delta storage and reverts
 
-Phase 2 (P2): Architectural Improvements
-|-- #4 Incremental root updates        [OPEN]
-+-- #5 MDBX-backed reads               [OPEN] - overlay getters implemented
+Phase 2 (P2): Memory Optimization
+|-- #23 Remove full tree at startup    [DONE] - MDBX is canonical
+|-- #24 MDBX-backed reads              [DONE] - dirty overlay + MDBX fallback
++-- #25 Streaming root computation     [DONE] - StreamingTreeBuilder from MDBX
 
 Phase 3 (P3): Advanced Optimizations
-|-- #6 Streaming tree builder          [PARTIAL] - verify_root_streaming
+|-- #4 Incremental root updates        [OPEN] - requires ubt crate changes
 +-- #7 Parallel hashing                [OPEN]
 ```
 
