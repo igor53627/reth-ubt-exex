@@ -34,7 +34,7 @@ reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified B
 |                      |  - ubt_block_deltas: reorg data |  |
 |                      +---------------------------------+  |
 +-----------------------------------------------------------+
-```text
+```
 
 ## Production Readiness
 
@@ -144,7 +144,7 @@ UbtError
   +-- Serialization(bincode::Error)
   +-- StateExtraction { message }
   +-- Io(std::io::Error)
-```text
+```
 
 ### Metrics (`metrics.rs`)
 
@@ -193,7 +193,25 @@ Phase 2 (P2): Memory Optimization
 Phase 3 (P3): Advanced Optimizations
 |-- #4 Incremental root updates        [OPEN] - requires ubt crate changes
 +-- #7 Parallel hashing                [DONE] - rayon for stem hashing
-```text
+
+Testing
++-- #28 Property-based testing         [DONE] - proptest for invariants
+```
+
+## Testing
+
+Property-based tests (`src/property_tests.rs`) verify critical invariants:
+
+| Test | Invariant |
+|------|-----------|
+| `prop_delta_apply_then_revert_restores_state` | Revert undoes all changes |
+| `prop_revert_then_replay_same_final_state` | Replay produces identical state |
+| `prop_root_determinism_single_block` | Root is order-independent |
+| `prop_overlay_mdbx_matches_model` | State matches HashMap model |
+| `prop_stem_count_monotone` | Stem count never decreases |
+| `prop_multi_block_reorg` | Multi-block reorgs are correct |
+
+Run with `cargo test property_tests`.
 
 ## UBT Key Layout (EIP-7864)
 
@@ -204,7 +222,7 @@ Account Basic Data:  hash(address || 0x00)[0:31] + 0x00
 Code Hash:           hash(address || 0x00)[0:31] + 0x01
 Code Chunk i:        hash(address || 0x00)[0:31] + (0x80 + i)
 Storage Slot:        hash(address || 0x01 || slot)[0:31] + slot[31]
-```text
+```
 
 ## Dependencies
 

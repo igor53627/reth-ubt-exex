@@ -211,14 +211,31 @@ cd ../reth-ubt-exex
 - [Architecture](docs/architecture.md) - System design and data flow
 - [Changelog](CHANGELOG.md) - Version history
 
+## Testing
+
+```bash
+# Run all tests (21 tests including property-based tests)
+cargo test
+
+# Run property-based tests only
+cargo test property_tests
+```
+
+Property-based tests verify critical invariants:
+- Delta apply/revert restores original state
+- Root hash is deterministic regardless of entry order
+- Overlay + MDBX state matches a HashMap model
+- Multi-block reorg correctness
+
 ## Roadmap
 
 | Status | Description |
 |--------|-------------|
 | Done | Deferred root computation, batch persistence, reorg handling |
 | Done | MDBX-backed reads, streaming root computation |
+| Done | Parallel hashing (rayon for stem hashing) |
+| Done | Property-based testing for critical invariants |
 | Open | Incremental root updates (requires ubt crate changes) |
-| Open | Parallel hashing |
 
 See [GitHub Issues](https://github.com/igor53627/reth-ubt-exex/issues) for details.
 

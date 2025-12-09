@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Replaced `.ok().flatten()` patterns with proper `?` error propagation
 
 ### Added
+- Property-based testing for critical invariants (#28)
+  - Delta apply/revert restores original state
+  - Revert then replay produces same final state
+  - Root hash determinism (order independence)
+  - Overlay + MDBX matches HashMap model
+  - Stem count monotonically increasing
+  - Multi-block reorg correctness
 - Production readiness improvements (#13):
   - Custom error types with `thiserror` (#18)
   - Prometheus-compatible metrics (#16)
