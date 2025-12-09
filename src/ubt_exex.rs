@@ -18,6 +18,9 @@
 //! The full tree is NOT loaded at startup - only the overlay accumulates changes
 //! between flushes. This reduces memory from ~80GB+ to <1GB for large state.
 //!
+//! When mutating a stem, the overlay is seeded from MDBX if not already present.
+//! This ensures all subindex values are preserved when updating a single subindex.
+//!
 //! # Reorg Handling
 //!
 //! State deltas are stored per-block, allowing reverts to restore previous values.
@@ -187,28 +190,22 @@ impl UbtExEx {
         let mut seen_new_stems: std::collections::HashSet<Stem> = std::collections::HashSet::new();
 
         for (key, value) in &entries {
-            let old_value = self
-                .dirty_stems
-                .get(&key.stem)
-                .and_then(|node| node.get_value(key.subindex))
-                .or_else(|| self.db.load_value(key).ok().flatten())
-                .unwrap_or(B256::ZERO);
+            if !self.dirty_stems.contains_key(&key.stem) {
+                if let Some(existing) = self.db.load_stem(&key.stem)? {
+                    self.dirty_stems.insert(key.stem, existing);
+                } else {
+                    seen_new_stems.insert(key.stem);
+                    self.dirty_stems.insert(key.stem, StemNode::new(key.stem));
+                }
+            }
+
+            let stem_node = self.dirty_stems.get_mut(&key.stem).expect("just inserted");
+            let old_value = stem_node.get_value(key.subindex).unwrap_or(B256::ZERO);
 
             if old_value != *value {
                 deltas.push((key.stem, key.subindex, old_value));
             }
 
-            let is_new_stem = !self.dirty_stems.contains_key(&key.stem)
-                && self.db.load_stem(&key.stem).ok().flatten().is_none()
-                && !seen_new_stems.contains(&key.stem);
-            if is_new_stem {
-                seen_new_stems.insert(key.stem);
-            }
-
-            let stem_node = self
-                .dirty_stems
-                .entry(key.stem)
-                .or_insert_with(|| StemNode::new(key.stem));
             stem_node.set_value(key.subindex, *value);
         }
 
@@ -310,10 +307,14 @@ impl UbtExEx {
             }
 
             for (stem, subindex, old_value) in deltas.iter().rev() {
-                let stem_node = self
-                    .dirty_stems
-                    .entry(*stem)
-                    .or_insert_with(|| StemNode::new(*stem));
+                if !self.dirty_stems.contains_key(stem) {
+                    if let Some(existing) = self.db.load_stem(stem)? {
+                        self.dirty_stems.insert(*stem, existing);
+                    } else {
+                        self.dirty_stems.insert(*stem, StemNode::new(*stem));
+                    }
+                }
+                let stem_node = self.dirty_stems.get_mut(stem).expect("just inserted");
                 stem_node.set_value(*subindex, *old_value);
             }
 

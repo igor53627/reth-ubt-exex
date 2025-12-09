@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Critical bug: dirty overlay now seeds from MDBX before mutation (#27)
+  - Previously, updating a stem not in dirty_stems created an empty StemNode
+  - This caused all other subindex values in MDBX to be lost on flush
+  - Now loads existing stem from MDBX to preserve all subindex values
+- Error handling: MDBX read errors are now propagated instead of silently swallowed (#27)
+  - Replaced `.ok().flatten()` patterns with proper `?` error propagation
+
 ### Added
 - Production readiness improvements (#13):
   - Custom error types with `thiserror` (#18)
