@@ -78,6 +78,19 @@ impl UbtConfig {
             Err(_) => self.delta_retention,
         }
     }
+
+    /// Create a config for testing with explicit data directory.
+    ///
+    /// Uses flush_interval=1 and delta_retention=1024 for predictable test behavior.
+    #[cfg(test)]
+    pub fn for_tests(data_dir: std::path::PathBuf) -> Self {
+        Self {
+            data_dir: Some(data_dir),
+            flush_interval: 1,
+            delta_retention: 1024,
+            disabled: false,
+        }
+    }
 }
 
 impl Default for UbtConfig {
