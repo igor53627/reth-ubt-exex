@@ -37,6 +37,8 @@ pub struct UbtConfig {
 
 impl UbtConfig {
     /// Get the data directory, with env var fallback.
+    ///
+    /// Precedence: CLI arg > RETH_DATA_DIR env var > current directory
     pub fn get_data_dir(&self) -> PathBuf {
         self.data_dir.clone().unwrap_or_else(|| {
             std::env::var("RETH_DATA_DIR")
@@ -46,6 +48,8 @@ impl UbtConfig {
     }
 
     /// Get flush interval, with env var fallback for backwards compatibility.
+    ///
+    /// Precedence: CLI arg (if not default) > UBT_FLUSH_INTERVAL env var > default
     pub fn get_flush_interval(&self) -> u64 {
         if self.flush_interval != DEFAULT_FLUSH_INTERVAL {
             return self.flush_interval;
@@ -54,6 +58,19 @@ impl UbtConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(self.flush_interval)
+    }
+
+    /// Get delta retention, with env var fallback for backwards compatibility.
+    ///
+    /// Precedence: CLI arg (if not default) > UBT_DELTA_RETENTION env var > default
+    pub fn get_delta_retention(&self) -> u64 {
+        if self.delta_retention != DEFAULT_DELTA_RETENTION {
+            return self.delta_retention;
+        }
+        std::env::var("UBT_DELTA_RETENTION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.delta_retention)
     }
 }
 

@@ -24,33 +24,18 @@ use reth_exex::ExExNotificationsStream;
 use reth_execution_types::Chain;
 use reth_node_api::FullNodeComponents;
 use reth_primitives_traits::{AlloyBlockHeader as _, NodePrimitives};
-use std::{collections::HashMap, path::PathBuf, time::Instant};
+use std::{collections::HashMap, time::Instant};
 use tracing::{debug, info, warn};
 use ubt::{
     chunkify_code, get_basic_data_key, get_code_chunk_key, get_code_hash_key, get_storage_slot_key,
     BasicDataLeaf, Blake3Hasher, Stem, StemNode, StreamingTreeBuilder, TreeKey, UnifiedBinaryTree,
 };
 
+use crate::config::UbtConfig;
 use crate::error::Result;
 use crate::persistence::{UbtDatabase, UbtHead};
 
 const UBT_DATA_DIR: &str = "ubt";
-const DEFAULT_FLUSH_INTERVAL: u64 = 1;
-const DEFAULT_DELTA_RETENTION: u64 = 256;
-
-fn get_flush_interval() -> u64 {
-    std::env::var("UBT_FLUSH_INTERVAL")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_FLUSH_INTERVAL)
-}
-
-fn get_delta_retention() -> u64 {
-    std::env::var("UBT_DELTA_RETENTION")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_DELTA_RETENTION)
-}
 
 pub struct UbtExEx {
     tree: UnifiedBinaryTree<Blake3Hasher>,
@@ -66,11 +51,13 @@ pub struct UbtExEx {
 }
 
 impl UbtExEx {
-    pub fn new(data_dir: PathBuf) -> Result<Self> {
+    /// Create a new UBT ExEx instance with the given configuration.
+    pub fn new(config: &UbtConfig) -> Result<Self> {
+        let data_dir = config.get_data_dir();
         let ubt_dir = data_dir.join(UBT_DATA_DIR);
         let db = UbtDatabase::open(&ubt_dir)?;
-        let flush_interval = get_flush_interval();
-        let delta_retention = get_delta_retention();
+        let flush_interval = config.get_flush_interval();
+        let delta_retention = config.get_delta_retention();
 
         let (tree, last_block, last_hash, last_persisted_block, last_persisted_hash) = if let Some(head) =
             db.load_head()?
@@ -103,6 +90,7 @@ impl UbtExEx {
                 );
             }
 
+            info!("Verifying UBT root via streaming; this may take a while on large state");
             if verify_root_streaming(&db, head.root)? {
                 info!("Streaming root verification passed");
             } else {
@@ -138,6 +126,11 @@ impl UbtExEx {
         })
     }
 
+    /// Get the last persisted head for ExEx resumption.
+    ///
+    /// Returns `None` if no blocks have been persisted yet (fresh start).
+    /// Note: Block 0 (genesis) is treated as "no head" - this assumes genesis
+    /// is not persisted directly but rather processed via backfill.
     pub fn get_head(&self) -> Option<ExExHead> {
         if self.last_persisted_block == 0 {
             None
@@ -300,6 +293,14 @@ impl UbtExEx {
         for block_number in &block_numbers {
             let deltas = self.db.load_block_deltas(*block_number)?;
 
+            if deltas.is_empty() {
+                warn!(
+                    block = *block_number,
+                    retention = self.delta_retention,
+                    "No deltas found while reverting block; reorg may exceed delta_retention"
+                );
+            }
+
             for (stem, subindex, old_value) in deltas.iter().rev() {
                 let key = TreeKey::new(*stem, *subindex);
                 self.tree.insert(key.clone(), *old_value);
@@ -438,12 +439,18 @@ fn u256_to_b256(value: U256) -> B256 {
     B256::from(value.to_be_bytes::<32>())
 }
 
+/// Main entry point for the UBT ExEx.
+///
+/// Configuration precedence: CLI args > environment variables > defaults
 pub async fn ubt_exex<Node: FullNodeComponents>(mut ctx: ExExContext<Node>) -> eyre::Result<()> {
-    let data_dir = std::env::var("RETH_DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let config = UbtConfig::default();
 
-    let mut ubt = UbtExEx::new(data_dir)?;
+    if config.disabled {
+        info!("UBT ExEx disabled via configuration");
+        return Ok(());
+    }
+
+    let mut ubt = UbtExEx::new(&config)?;
 
     info!("UBT ExEx started with MDBX persistence");
 
