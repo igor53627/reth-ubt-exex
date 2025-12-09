@@ -1,6 +1,7 @@
 //! Metrics for UBT ExEx.
 //!
 //! Exposes Prometheus-compatible metrics for monitoring UBT performance.
+//! Uses the `metrics` crate with static metric names.
 
 use metrics::{counter, gauge, histogram};
 

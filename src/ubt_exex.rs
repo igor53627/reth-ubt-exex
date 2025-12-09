@@ -441,7 +441,13 @@ fn u256_to_b256(value: U256) -> B256 {
 
 /// Main entry point for the UBT ExEx.
 ///
-/// Configuration precedence: CLI args > environment variables > defaults
+/// Configuration precedence: environment variables > defaults.
+///
+/// Note: CLI args are defined in `UbtConfig` with clap derives but are not yet
+/// wired through reth's CLI extension system. For now, use environment variables:
+/// - `RETH_DATA_DIR` - base data directory
+/// - `UBT_FLUSH_INTERVAL` - blocks between MDBX flushes
+/// - `UBT_DELTA_RETENTION` - blocks to retain deltas for reorgs
 pub async fn ubt_exex<Node: FullNodeComponents>(mut ctx: ExExContext<Node>) -> eyre::Result<()> {
     let config = UbtConfig::default();
 
@@ -508,7 +514,12 @@ pub async fn ubt_exex<Node: FullNodeComponents>(mut ctx: ExExContext<Node>) -> e
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                info!("Received shutdown signal");
+                info!("Received shutdown signal (SIGINT)");
+                ubt.shutdown()?;
+                break;
+            }
+            _ = sigterm_recv() => {
+                info!("Received shutdown signal (SIGTERM)");
                 ubt.shutdown()?;
                 break;
             }
@@ -516,4 +527,18 @@ pub async fn ubt_exex<Node: FullNodeComponents>(mut ctx: ExExContext<Node>) -> e
     }
 
     Ok(())
+}
+
+/// Platform-specific SIGTERM receiver.
+/// On Unix, waits for SIGTERM. On other platforms, returns pending future.
+#[cfg(unix)]
+async fn sigterm_recv() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+    sigterm.recv().await;
+}
+
+#[cfg(not(unix))]
+async fn sigterm_recv() {
+    std::future::pending::<()>().await;
 }
