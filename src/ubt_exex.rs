@@ -83,7 +83,7 @@ impl UbtExEx {
                 );
 
                 info!("Verifying UBT root via streaming; this may take a while on large state");
-                let computed = compute_root_streaming(&db)?;
+                let computed = Self::compute_root_from_db(&db)?;
                 if computed == head.root {
                     info!("Streaming root verification passed");
                 } else {
@@ -127,8 +127,8 @@ impl UbtExEx {
         })
     }
 
-    /// Get the current stem count.
-    #[allow(dead_code)]
+    /// Get the current stem count (used by tests).
+    #[cfg(test)]
     pub fn stem_count(&self) -> usize {
         self.stem_count
     }
@@ -437,7 +437,15 @@ impl UbtExEx {
     /// keeping the full tree in memory. Uses rayon for parallel stem hashing.
     /// Note: still creates a Vec of all entries, so memory spikes during computation.
     pub(crate) fn compute_root_streaming(&self) -> Result<B256> {
-        let entries = self.db.iter_entries_sorted()?;
+        Self::compute_root_from_db(&self.db)
+    }
+
+    /// Static helper to compute root hash from a database reference.
+    ///
+    /// Used both during initialization (before `self` exists) and via
+    /// `compute_root_streaming` for instance calls.
+    fn compute_root_from_db(db: &UbtDatabase) -> Result<B256> {
+        let entries = db.iter_entries_sorted()?;
         let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
         Ok(root)
     }
@@ -465,13 +473,6 @@ impl UbtExEx {
 
         Ok(())
     }
-}
-
-/// Compute root hash from MDBX using streaming builder with parallel hashing.
-fn compute_root_streaming(db: &UbtDatabase) -> Result<B256> {
-    let entries = db.iter_entries_sorted()?;
-    let root = StreamingTreeBuilder::<Blake3Hasher>::new().build_root_hash_parallel(entries);
-    Ok(root)
 }
 
 const KECCAK_EMPTY: B256 = B256::new([

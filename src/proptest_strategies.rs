@@ -89,11 +89,6 @@ pub fn to_tree_entries(block: &Block) -> Vec<(TreeKey, B256)> {
         .collect()
 }
 
-#[allow(dead_code)]
-pub fn to_tree_entries_flat(blocks: &[Block]) -> Vec<(TreeKey, B256)> {
-    blocks.iter().flat_map(to_tree_entries).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
