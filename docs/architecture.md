@@ -2,7 +2,7 @@
 
 ## Overview
 
-reth-ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified Binary Tree state in parallel with reth's native MPT state.
+ubt-exex is an Execution Extension (ExEx) that maintains EIP-7864 Unified Binary Tree state in parallel with reth's native MPT state.
 
 ```text
 +-----------------------------------------------------------+

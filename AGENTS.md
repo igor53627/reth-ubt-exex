@@ -1,8 +1,8 @@
-# AGENTS.md - AI Agent Guidelines for reth-ubt-exex
+# AGENTS.md - AI Agent Guidelines for ubt-exex
 
 ## Project Overview
 
-reth-ubt-exex is an Execution Extension (ExEx) plugin for reth that maintains EIP-7864 Unified Binary Tree state.
+ubt-exex is an Execution Extension (ExEx) plugin for reth that maintains EIP-7864 Unified Binary Tree state.
 
 ## Commands
 
@@ -14,7 +14,7 @@ cargo build --release
 cargo test
 
 # Run with reth (Sepolia)
-RETH_DATA_DIR=/path/to/data ./target/release/reth-ubt node --chain sepolia
+RETH_DATA_DIR=/path/to/data ./target/release/ubt-exex node --chain sepolia
 
 # Format
 cargo +nightly fmt
@@ -29,7 +29,7 @@ cargo doc --no-deps --document-private-items
 ## Project Structure
 
 ```
-reth-ubt-exex/
+ubt-exex/
 ├── src/
 │   ├── main.rs          # Binary entry point, reth node setup
 │   ├── ubt_exex.rs      # Core ExEx logic, state extraction
@@ -113,7 +113,7 @@ Follow [Keep a Changelog](https://keepachangelog.com/):
 
 ## GitHub Issues
 
-Track optimization work at: https://github.com/igor53627/reth-ubt-exex/issues
+Track optimization work at: https://github.com/igor53627/ubt-exex/issues
 
 Priority order:
 - P0: #1 (Deferred Root Hash) - do first

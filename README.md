@@ -1,6 +1,6 @@
-# reth-ubt-exex
+# ubt-exex
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/reth-ubt-exex)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/igor53627/ubt-exex)
 
 Reth Execution Extension (ExEx) plugin for maintaining UBT (EIP-7864 Unified Binary Tree) state in parallel with the normal MPT state.
 
@@ -76,13 +76,13 @@ cargo build --release
 
 ```bash
 # Run on Sepolia testnet
-./target/release/reth-ubt node --chain sepolia
+./target/release/ubt-exex node --chain sepolia
 
 # Run on mainnet  
-./target/release/reth-ubt node --chain mainnet
+./target/release/ubt-exex node --chain mainnet
 
 # With custom data directory
-RETH_DATA_DIR=/path/to/data ./target/release/reth-ubt node --chain sepolia
+RETH_DATA_DIR=/path/to/data ./target/release/ubt-exex node --chain sepolia
 ```
 
 ### Output
@@ -140,7 +140,7 @@ Example:
 
 ```bash
 RETH_DATA_DIR=/data UBT_FLUSH_INTERVAL=10 UBT_DELTA_RETENTION=1000 \
-  ./target/release/reth-ubt node --chain sepolia
+  ./target/release/ubt-exex node --chain sepolia
 ```
 
 ## Backfill Support
@@ -194,18 +194,18 @@ Deltas are stored per-block for reorg support:
 - Increase `UBT_DELTA_RETENTION` for deeper reorg support
 - If reorg exceeds retention, warning is logged and state may be inconsistent
 
-## Integration with reth-ubt-migration
+## Integration with ubt-migration
 
 For existing nodes, first run the migration tool to build the initial UBT:
 
 ```bash
 # 1. Run migration to build initial UBT state
-cd ../reth-ubt-migration
+cd ../ubt-migration
 cargo run --release -- --datadir ~/.local/share/reth/sepolia
 
 # 2. Run reth with UBT ExEx to maintain state going forward
-cd ../reth-ubt-exex
-./target/release/reth-ubt node --chain sepolia
+cd ../ubt-exex
+./target/release/ubt-exex node --chain sepolia
 ```
 
 ## Documentation
@@ -239,7 +239,7 @@ Property-based tests verify critical invariants:
 | Done | Property-based testing for critical invariants |
 | Open | Incremental root updates (requires ubt crate changes) |
 
-See [GitHub Issues](https://github.com/igor53627/reth-ubt-exex/issues) for details.
+See [GitHub Issues](https://github.com/igor53627/ubt-exex/issues) for details.
 
 ## Dependencies
 

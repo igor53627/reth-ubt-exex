@@ -1,4 +1,4 @@
-//! reth-ubt-exex: ExEx plugin for maintaining UBT state alongside reth
+//! ubt-exex: ExEx plugin for maintaining UBT state alongside reth
 //!
 //! This binary provides a reth node with an integrated Execution Extension (ExEx)
 //! that maintains an EIP-7864 Unified Binary Tree in parallel with the normal MPT state.

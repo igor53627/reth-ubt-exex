@@ -1,12 +1,12 @@
 [package]
-name = "reth-ubt-exex"
+name = "ubt-exex"
 version = "0.1.0"
 edition = "2021"
 description = "Reth ExEx plugin for maintaining UBT (EIP-7864 Unified Binary Tree) state"
 license = "MIT OR Apache-2.0"
 
 [[bin]]
-name = "reth-ubt"
+name = "ubt-exex"
 path = "src/main.rs"
 
 [dependencies]
