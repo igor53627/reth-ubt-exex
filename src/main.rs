@@ -20,18 +20,19 @@
 //! - `UBT_FLUSH_INTERVAL`: Blocks between MDBX flushes (default: 1)
 //! - `UBT_DELTA_RETENTION`: Blocks to retain deltas for reorgs (default: 256)
 
-use reth_ethereum::{node::EthereumNode, cli::Cli};
+use reth_ethereum::{cli::Cli, node::EthereumNode};
 
 mod config;
 mod error;
+mod mdbx;
 mod metrics;
 mod persistence;
 mod ubt_exex;
 
 #[cfg(test)]
-mod proptest_strategies;
-#[cfg(test)]
 mod property_tests;
+#[cfg(test)]
+mod proptest_strategies;
 
 use ubt_exex::ubt_exex;
 

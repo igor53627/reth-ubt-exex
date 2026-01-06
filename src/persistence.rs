@@ -16,11 +16,11 @@
 //! The stored root hash is verified against the computed root to detect corruption.
 
 use alloy_primitives::B256;
-use reth_libmdbx::{DatabaseFlags, Environment, Geometry, PageSize, WriteFlags};
 use std::path::Path;
 use ubt::{Stem, StemNode, TreeKey, STEM_LEN};
 
 use crate::error::{DatabaseError, Result, UbtError};
+use crate::mdbx::{DatabaseFlags, Environment, Geometry, WriteFlags};
 
 const STEMS_DB: &str = "ubt_stems";
 const META_DB: &str = "ubt_meta";
@@ -43,29 +43,34 @@ impl UbtDatabase {
     pub fn open(path: &Path) -> Result<Self> {
         std::fs::create_dir_all(path)?;
 
-        let mut builder = Environment::builder();
-        builder.set_max_dbs(10);
-        builder.set_geometry(Geometry {
-            size: Some(0..(1024 * 1024 * 1024 * 1024)), // Up to 1TB
-            page_size: Some(PageSize::Set(4096)),
-            ..Default::default()
-        });
+        let geometry = Geometry {
+            size_lower: 0,
+            size_now: 4096 * 256,
+            size_upper: 1024 * 1024 * 1024 * 1024, // Up to 1TB
+            growth_step: -1,
+            shrink_threshold: -1,
+            page_size: 4096,
+        };
 
-        let env = builder.open(path).map_err(|e| {
-            UbtError::Database(DatabaseError::Open {
-                path: path.display().to_string(),
-                reason: e.to_string(),
-            })
-        })?;
+        let env = Environment::builder()
+            .set_max_dbs(10)
+            .set_geometry(geometry)
+            .open(path)
+            .map_err(|e| {
+                UbtError::Database(DatabaseError::Open {
+                    path: path.display().to_string(),
+                    reason: e.to_string(),
+                })
+            })?;
 
         let txn = env
             .begin_rw_txn()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
-        txn.create_db(Some(STEMS_DB), DatabaseFlags::default())
+        txn.create_db(Some(STEMS_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
-        txn.create_db(Some(META_DB), DatabaseFlags::default())
+        txn.create_db(Some(META_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
-        txn.create_db(Some(DELTAS_DB), DatabaseFlags::default())
+        txn.create_db(Some(DELTAS_DB), DatabaseFlags::CREATE)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -83,7 +88,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         match txn
-            .get::<Vec<u8>>(meta_db.dbi(), META_KEY_HEAD)
+            .get::<Vec<u8>>(meta_db, META_KEY_HEAD)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -104,7 +109,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         let bytes = bincode::serialize(head)?;
-        txn.put(meta_db.dbi(), META_KEY_HEAD, &bytes, WriteFlags::default())
+        txn.put(meta_db, META_KEY_HEAD, &bytes, WriteFlags::DEFAULT)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -122,7 +127,7 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         match txn
-            .get::<Vec<u8>>(stems_db.dbi(), stem.as_bytes())
+            .get::<Vec<u8>>(stems_db, stem.as_bytes())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -156,7 +161,7 @@ impl UbtDatabase {
         for (stem, stem_node) in updates {
             let key = stem.as_bytes();
             let value = bincode::serialize(stem_node)?;
-            txn.put(stems_db.dbi(), key, &value, WriteFlags::default())
+            txn.put(stems_db, key, &value, WriteFlags::DEFAULT)
                 .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         }
 
@@ -256,7 +261,7 @@ impl UbtDatabase {
 
         let key = block_number.to_be_bytes();
         let value = bincode::serialize(deltas)?;
-        txn.put(deltas_db.dbi(), &key, &value, WriteFlags::default())
+        txn.put(deltas_db, &key, &value, WriteFlags::DEFAULT)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -275,7 +280,7 @@ impl UbtDatabase {
 
         let key = block_number.to_be_bytes();
         match txn
-            .get::<Vec<u8>>(deltas_db.dbi(), &key)
+            .get::<Vec<u8>>(deltas_db, &key)
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
         {
             Some(bytes) => {
@@ -296,14 +301,8 @@ impl UbtDatabase {
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
 
         let key = block_number.to_be_bytes();
-        if let Err(e) = txn.del(deltas_db.dbi(), &key, None) {
-            if !matches!(e, reth_libmdbx::Error::NotFound) {
-                return Err(UbtError::Database(DatabaseError::Mdbx(format!(
-                    "Failed to delete deltas for block {}: {}",
-                    block_number, e
-                ))));
-            }
-        }
+        txn.del(deltas_db, &key, None)
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
 
@@ -354,7 +353,7 @@ impl UbtDatabase {
 
         let count = to_delete.len();
         for key in to_delete {
-            txn.del(deltas_db.dbi(), &key, None).map_err(|e| {
+            txn.del(deltas_db, &key, None).map_err(|e| {
                 UbtError::Database(DatabaseError::Mdbx(format!(
                     "Failed to delete delta: {}",
                     e
@@ -402,7 +401,7 @@ impl UbtDatabase {
         drop(cursor);
 
         for key in to_delete {
-            txn.del(deltas_db.dbi(), &key, None)
+            txn.del(deltas_db, &key, None)
                 .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         }
         txn.commit()
