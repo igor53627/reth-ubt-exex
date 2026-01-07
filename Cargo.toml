@@ -23,7 +23,7 @@ reth-execution-types = { git = "https://github.com/paradigmxyz/reth", tag = "v1.
 reth-tracing = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-node-api = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
 reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", tag = "v1.9.3" }
-mdbx-rs = { git = "https://github.com/igor53627/mdbx-rs", branch = "devin/1767738735-add-capi-feature", default-features = false }
+mdbx-rs = { git = "https://github.com/igor53627/mdbx-rs", branch = "main", default-features = false }
 
 # Alloy primitives
 alloy-primitives = "1"
