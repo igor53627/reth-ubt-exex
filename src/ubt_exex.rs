@@ -30,8 +30,8 @@ use alloy_eips::BlockNumHash;
 use alloy_primitives::{B256, U256};
 use futures::TryStreamExt;
 use reth_ethereum::exex::{ExExContext, ExExEvent, ExExHead, ExExNotification};
-use reth_exex::ExExNotificationsStream;
 use reth_execution_types::Chain;
+use reth_exex::ExExNotificationsStream;
 use reth_node_api::FullNodeComponents;
 use reth_primitives_traits::{AlloyBlockHeader as _, NodePrimitives};
 use std::{collections::HashMap, time::Instant};
@@ -73,38 +73,44 @@ impl UbtExEx {
         let flush_interval = config.get_flush_interval();
         let delta_retention = config.get_delta_retention();
 
-        let (last_block, last_hash, last_root, last_persisted_block, last_persisted_hash, stem_count) =
-            if let Some(head) = db.load_head()? {
-                info!(
-                    block = head.block_number,
-                    root = %head.root,
-                    stems = head.stem_count,
-                    "Resuming UBT state from MDBX (not loading full tree)"
-                );
+        let (
+            last_block,
+            last_hash,
+            last_root,
+            last_persisted_block,
+            last_persisted_hash,
+            stem_count,
+        ) = if let Some(head) = db.load_head()? {
+            info!(
+                block = head.block_number,
+                root = %head.root,
+                stems = head.stem_count,
+                "Resuming UBT state from MDBX (not loading full tree)"
+            );
 
-                info!("Verifying UBT root via streaming; this may take a while on large state");
-                let computed = Self::compute_root_from_db(&db)?;
-                if computed == head.root {
-                    info!("Streaming root verification passed");
-                } else {
-                    return Err(crate::error::UbtError::RootVerificationFailed {
-                        expected: format!("{}", head.root),
-                        computed: format!("{}", computed),
-                    });
-                }
-
-                (
-                    head.block_number,
-                    head.block_hash,
-                    head.root,
-                    head.block_number,
-                    head.block_hash,
-                    head.stem_count,
-                )
+            info!("Verifying UBT root via streaming; this may take a while on large state");
+            let computed = Self::compute_root_from_db(&db)?;
+            if computed == head.root {
+                info!("Streaming root verification passed");
             } else {
-                info!("Starting fresh UBT state");
-                (0, B256::ZERO, B256::ZERO, 0, B256::ZERO, 0)
-            };
+                return Err(crate::error::UbtError::RootVerificationFailed {
+                    expected: format!("{}", head.root),
+                    computed: format!("{}", computed),
+                });
+            }
+
+            (
+                head.block_number,
+                head.block_hash,
+                head.root,
+                head.block_number,
+                head.block_hash,
+                head.stem_count,
+            )
+        } else {
+            info!("Starting fresh UBT state");
+            (0, B256::ZERO, B256::ZERO, 0, B256::ZERO, 0)
+        };
 
         info!(
             flush_interval = flush_interval,
@@ -179,7 +185,7 @@ impl UbtExEx {
             }
 
             for (slot, value) in &account.storage {
-                let slot_bytes = u256_to_b256((*slot).into());
+                let slot_bytes = u256_to_b256(*slot);
                 let value_bytes = u256_to_b256(value.present_value);
                 let storage_key = get_storage_slot_key(&address, &slot_bytes.0);
                 self.pending_entries.push((storage_key, value_bytes));
@@ -273,7 +279,11 @@ impl UbtExEx {
                 let prune_before = block_number - self.delta_retention;
                 match self.db.prune_deltas_before(prune_before) {
                     Ok(count) if count > 0 => {
-                        debug!(pruned = count, before_block = prune_before, "Pruned old deltas");
+                        debug!(
+                            pruned = count,
+                            before_block = prune_before,
+                            "Pruned old deltas"
+                        );
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to prune old deltas");
@@ -290,7 +300,8 @@ impl UbtExEx {
                 block = block_number,
                 entries = entry_count,
                 pending_stems = self.dirty_stems.len(),
-                blocks_until_flush = self.flush_interval - (block_number - self.last_persisted_block),
+                blocks_until_flush =
+                    self.flush_interval - (block_number - self.last_persisted_block),
                 "UBT updated in-memory (pending flush)"
             );
 
@@ -335,7 +346,9 @@ impl UbtExEx {
             }
         }
 
-        if let Some((&first_reverted_num, first_reverted_block)) = blocks.iter().min_by_key(|(num, _)| *num) {
+        if let Some((&first_reverted_num, first_reverted_block)) =
+            blocks.iter().min_by_key(|(num, _)| *num)
+        {
             if first_reverted_num > 0 {
                 self.last_block = first_reverted_num - 1;
                 self.last_hash = first_reverted_block.header().parent_hash();
@@ -455,10 +468,7 @@ impl UbtExEx {
     /// This is the core logic shared by revert operations. Given a list of deltas
     /// (stem, subindex, old_value), applies them in reverse order to restore
     /// previous values.
-    pub(crate) fn apply_deltas_reverse(
-        &mut self,
-        deltas: &[(Stem, u8, B256)],
-    ) -> Result<()> {
+    pub(crate) fn apply_deltas_reverse(&mut self, deltas: &[(Stem, u8, B256)]) -> Result<()> {
         for (stem, subindex, old_value) in deltas.iter().rev() {
             if !self.dirty_stems.contains_key(stem) {
                 if let Some(existing) = self.db.load_stem(stem)? {
