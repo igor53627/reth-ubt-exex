@@ -247,6 +247,16 @@ pub fn export_full_state_from_nomt(
     chain_id: u64,
 ) -> Result<ExportResult> {
     let key_index = KeyIndex::open(key_index_path)?;
+    let nomt = open_nomt(nomt_dir)?;
+    export_full_state_from_nomt_with(&key_index, &nomt, output_dir, chain_id)
+}
+
+fn export_full_state_from_nomt_with(
+    key_index: &KeyIndex,
+    nomt: &Nomt<NomtBlake3Hasher>,
+    output_dir: &Path,
+    chain_id: u64,
+) -> Result<ExportResult> {
     let head = key_index.load_head()?.ok_or_else(|| {
         UbtError::Database(crate::error::DatabaseError::Mdbx(
             "Missing key index head metadata".to_string(),
@@ -270,8 +280,6 @@ pub fn export_full_state_from_nomt(
 
     let placeholder_header = StateHeader::new(0, head.block_number, chain_id, head.block_hash);
     state_writer.write_all(&placeholder_header.to_bytes())?;
-
-    let nomt = open_nomt(nomt_dir)?;
 
     let mut entry_offset: u64 = 0;
     let mut stem_index_entries: Vec<(Stem, u64)> = Vec::new();
@@ -779,6 +787,10 @@ fn read_nomt_value(nomt: &Nomt<NomtBlake3Hasher>, tree_index: [u8; 32]) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nomt::KeyReadWrite;
+    use tempfile::tempdir;
+
+    const NOMT_HEAD_KEY: KeyPath = [0xff; 32];
 
     #[test]
     fn test_state_header_roundtrip() {
@@ -878,5 +890,140 @@ mod tests {
             12345,
             "Offset at byte 31"
         );
+    }
+
+    #[test]
+    fn test_export_full_state_from_nomt_pipeline() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp = tempdir()?;
+        let nomt_dir = temp.path().join("nomt");
+        let key_index_path = temp.path().join("key-index.redb");
+        let output_dir = temp.path().join("out");
+
+        let stem_a = Stem::new([0x10; 31]);
+        let stem_b = Stem::new([0x20; 31]);
+        let addr_a = Address::from([0x01; 20]);
+        let addr_b = Address::from([0x02; 20]);
+
+        let subindices_a = [0u8, 5u8, 200u8];
+        let subindices_b = [1u8, 7u8];
+
+        let key_index = KeyIndex::open(&key_index_path)?;
+        let mut updates = Vec::new();
+        for &sub in &subindices_a {
+            updates.push((stem_a, sub, addr_a));
+        }
+        for &sub in &subindices_b {
+            updates.push((stem_b, sub, addr_b));
+        }
+        key_index.apply_updates(updates)?;
+
+        let block_number = 42u64;
+        let block_hash = B256::repeat_byte(0x44);
+        let root = B256::repeat_byte(0x55);
+        key_index.save_head(block_number, block_hash, root, 2)?;
+
+        let mut expected_entries = Vec::new();
+        for &sub in &subindices_a {
+            let tree_index = tree_index_from_key(&stem_a, sub);
+            let value = B256::from([sub; 32]);
+            expected_entries.push((addr_a, tree_index, value));
+        }
+        for &sub in &subindices_b {
+            let tree_index = tree_index_from_key(&stem_b, sub);
+            let value = B256::from([sub; 32]);
+            expected_entries.push((addr_b, tree_index, value));
+        }
+
+        let mut opts = NomtOptions::new();
+        opts.path(&nomt_dir);
+        opts.rollback(true);
+        opts.commit_concurrency(1);
+        let nomt = Nomt::<NomtBlake3Hasher>::open(opts)?;
+
+        let mut updates: Vec<(KeyPath, KeyReadWrite)> = expected_entries
+            .iter()
+            .map(|(_, tree_index, value)| (*tree_index, KeyReadWrite::Write(Some(value.0.to_vec()))))
+            .collect();
+        updates.push((
+            NOMT_HEAD_KEY,
+            KeyReadWrite::Write(Some(block_number.to_be_bytes().to_vec())),
+        ));
+        updates.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let session = nomt.begin_session(Default::default());
+        for (path, _) in &updates {
+            session.warm_up(*path);
+        }
+        let finished = session.finish(updates)?;
+        finished.commit(&nomt)?;
+
+        let result = export_full_state_from_nomt_with(&key_index, &nomt, &output_dir, 11155111)?;
+
+        assert_eq!(result.entry_count, expected_entries.len() as u64);
+        assert_eq!(result.stem_count, 2);
+        assert_eq!(result.block_number, block_number);
+        assert_eq!(result.block_hash, block_hash);
+        assert_eq!(result.root, root);
+
+        let state_bytes = std::fs::read(&result.state_file)?;
+        assert_eq!(&state_bytes[0..4], b"PIR2");
+        assert_eq!(
+            state_bytes.len(),
+            STATE_HEADER_SIZE + (expected_entries.len() * STATE_ENTRY_SIZE)
+        );
+
+        let entry_count = u64::from_le_bytes(state_bytes[8..16].try_into()?);
+        let header_block = u64::from_le_bytes(state_bytes[16..24].try_into()?);
+        let header_chain = u64::from_le_bytes(state_bytes[24..32].try_into()?);
+        let header_hash: [u8; 32] = state_bytes[32..64].try_into()?;
+
+        assert_eq!(entry_count, expected_entries.len() as u64);
+        assert_eq!(header_block, block_number);
+        assert_eq!(header_chain, 11155111);
+        assert_eq!(header_hash, block_hash.0);
+
+        let mut parsed_entries = Vec::new();
+        for idx in 0..entry_count as usize {
+            let offset = STATE_HEADER_SIZE + idx * STATE_ENTRY_SIZE;
+            let address: [u8; 20] = state_bytes[offset..offset + 20].try_into()?;
+            let tree_index: [u8; 32] = state_bytes[offset + 20..offset + 52].try_into()?;
+            let value: [u8; 32] = state_bytes[offset + 52..offset + 84].try_into()?;
+            parsed_entries.push((address, tree_index, value));
+        }
+
+        let mut expected_sorted = expected_entries
+            .iter()
+            .map(|(addr, tree_index, value)| (addr.into_array(), *tree_index, value.0))
+            .collect::<Vec<_>>();
+        expected_sorted.sort_by(|a, b| a.1.cmp(&b.1));
+
+        assert_eq!(parsed_entries.len(), expected_sorted.len());
+        for (actual, expected) in parsed_entries.iter().zip(expected_sorted.iter()) {
+            assert_eq!(actual, expected);
+        }
+
+        let stem_index_bytes = std::fs::read(&result.stem_index_file)?;
+        let stem_count = u64::from_le_bytes(stem_index_bytes[0..8].try_into()?);
+        assert_eq!(stem_count, 2);
+
+        let mut cursor = 8usize;
+        let stem_a_bytes = *stem_a.as_bytes();
+        let stem_b_bytes = *stem_b.as_bytes();
+
+        let stem_0: [u8; 31] = stem_index_bytes[cursor..cursor + 31].try_into()?;
+        cursor += 31;
+        let offset_0 = u64::from_le_bytes(stem_index_bytes[cursor..cursor + 8].try_into()?);
+        cursor += 8;
+
+        let stem_1: [u8; 31] = stem_index_bytes[cursor..cursor + 31].try_into()?;
+        cursor += 31;
+        let offset_1 = u64::from_le_bytes(stem_index_bytes[cursor..cursor + 8].try_into()?);
+
+        assert_eq!(stem_0, stem_a_bytes);
+        assert_eq!(offset_0, 0);
+        assert_eq!(stem_1, stem_b_bytes);
+        assert_eq!(offset_1, subindices_a.len() as u64);
+
+        Ok(())
     }
 }
