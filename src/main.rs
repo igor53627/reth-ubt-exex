@@ -20,19 +20,7 @@
 //! - `UBT_FLUSH_INTERVAL`: Blocks between MDBX flushes (default: 1)
 //! - `UBT_DELTA_RETENTION`: Blocks to retain deltas for reorgs (default: 256)
 
-use reth_ethereum::{node::EthereumNode, cli::Cli};
-
-mod config;
-mod error;
-mod metrics;
-mod persistence;
-mod ubt_exex;
-
-#[cfg(test)]
-mod proptest_strategies;
-#[cfg(test)]
-mod property_tests;
-
+use reth_ethereum::{cli::Cli, node::EthereumNode};
 use ubt_exex::ubt_exex;
 
 fn main() -> eyre::Result<()> {

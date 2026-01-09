@@ -15,14 +15,16 @@
 //! On startup, the ExEx loads all stems from MDBX and reconstructs the in-memory tree.
 //! The stored root hash is verified against the computed root to detect corruption.
 
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use reth_libmdbx::{DatabaseFlags, Environment, Geometry, PageSize, WriteFlags};
 use std::path::Path;
+use tracing::warn;
 use ubt::{Stem, StemNode, TreeKey, STEM_LEN};
 
 use crate::error::{DatabaseError, Result, UbtError};
 
 const STEMS_DB: &str = "ubt_stems";
+const STEM_ADDR_DB: &str = "ubt_stem_addresses";
 const META_DB: &str = "ubt_meta";
 const DELTAS_DB: &str = "ubt_block_deltas";
 const META_KEY_HEAD: &[u8] = b"head";
@@ -45,8 +47,9 @@ impl UbtDatabase {
 
         let mut builder = Environment::builder();
         builder.set_max_dbs(10);
+        let max_size = mdbx_max_size_from_env().unwrap_or(1024 * 1024 * 1024 * 1024); // 1TB
         builder.set_geometry(Geometry {
-            size: Some(0..(1024 * 1024 * 1024 * 1024)), // Up to 1TB
+            size: Some(0..max_size),
             page_size: Some(PageSize::Set(4096)),
             ..Default::default()
         });
@@ -66,6 +69,8 @@ impl UbtDatabase {
         txn.create_db(Some(META_DB), DatabaseFlags::default())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.create_db(Some(DELTAS_DB), DatabaseFlags::default())
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
+        txn.create_db(Some(STEM_ADDR_DB), DatabaseFlags::default())
             .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
         txn.commit()
             .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
@@ -245,6 +250,100 @@ impl UbtDatabase {
         Ok(entries)
     }
 
+    pub fn save_stem_address(&self, stem: &Stem, address: &Address) -> Result<()> {
+        let txn = self
+            .env
+            .begin_rw_txn()
+            .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
+        let db = txn
+            .open_db(Some(STEM_ADDR_DB))
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
+
+        txn.put(
+            db.dbi(),
+            stem.as_bytes(),
+            address.as_slice(),
+            WriteFlags::NO_OVERWRITE,
+        )
+        .map_err(|e| {
+            if matches!(e, reth_libmdbx::Error::KeyExist) {
+                return UbtError::Database(DatabaseError::Mdbx(format!(
+                    "Stem address already exists for {:?}",
+                    stem
+                )));
+            }
+            UbtError::Database(DatabaseError::Mdbx(e.to_string()))
+        })?;
+        txn.commit()
+            .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
+
+        Ok(())
+    }
+
+    pub fn batch_save_stem_addresses(&self, mappings: &[(Stem, Address)]) -> Result<()> {
+        if mappings.is_empty() {
+            return Ok(());
+        }
+
+        let txn = self
+            .env
+            .begin_rw_txn()
+            .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
+        let db = txn
+            .open_db(Some(STEM_ADDR_DB))
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
+
+        for (stem, address) in mappings {
+            match txn.put(
+                db.dbi(),
+                stem.as_bytes(),
+                address.as_slice(),
+                WriteFlags::NO_OVERWRITE,
+            ) {
+                Ok(()) => {}
+                Err(reth_libmdbx::Error::KeyExist) => {
+                    // Already exists - ignore if same address, otherwise it's a consistency issue
+                }
+                Err(e) => {
+                    return Err(UbtError::Database(DatabaseError::Mdbx(e.to_string())));
+                }
+            }
+        }
+
+        txn.commit()
+            .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
+
+        Ok(())
+    }
+
+    pub fn load_stem_address(&self, stem: &Stem) -> Result<Option<Address>> {
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| UbtError::Database(DatabaseError::Transaction(e.to_string())))?;
+        let db = txn
+            .open_db(Some(STEM_ADDR_DB))
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?;
+
+        match txn
+            .get::<Vec<u8>>(db.dbi(), stem.as_bytes())
+            .map_err(|e| UbtError::Database(DatabaseError::Mdbx(e.to_string())))?
+        {
+            Some(bytes) => {
+                if bytes.len() != 20 {
+                    return Err(UbtError::Database(DatabaseError::Mdbx(format!(
+                        "Invalid address length: expected 20, got {}",
+                        bytes.len()
+                    ))));
+                }
+                let mut addr = [0u8; 20];
+                addr.copy_from_slice(&bytes);
+                Ok(Some(Address::from(addr)))
+            }
+            None => Ok(None),
+        }
+    }
+
     pub fn save_block_deltas(&self, block_number: u64, deltas: &[(Stem, u8, B256)]) -> Result<()> {
         let txn = self
             .env
@@ -412,6 +511,36 @@ impl UbtDatabase {
     }
 }
 
+fn mdbx_max_size_from_env() -> Option<usize> {
+    let raw = std::env::var("UBT_MDBX_MAX_SIZE").ok()?;
+    let s = raw.trim().to_ascii_uppercase();
+    let split = s
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(s.len());
+    let (num_str, unit) = s.split_at(split);
+    let number: u64 = match num_str.trim().parse() {
+        Ok(v) => v,
+        Err(_) => {
+            warn!(value = %raw, "Invalid UBT_MDBX_MAX_SIZE, expected integer with optional unit");
+            return None;
+        }
+    };
+
+    let factor: u64 = match unit.trim() {
+        "" | "B" => 1,
+        "K" | "KB" => 1024,
+        "M" | "MB" => 1024 * 1024,
+        "G" | "GB" => 1024 * 1024 * 1024,
+        "T" | "TB" => 1024_u64 * 1024 * 1024 * 1024,
+        other => {
+            warn!(value = %raw, unit = %other, "Invalid UBT_MDBX_MAX_SIZE unit");
+            return None;
+        }
+    };
+
+    number.checked_mul(factor).map(|v| v as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +663,44 @@ mod tests {
         assert!(db.load_block_deltas(50).unwrap().is_empty());
         assert!(!db.load_block_deltas(100).unwrap().is_empty());
         assert!(!db.load_block_deltas(150).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_stem_address_roundtrip() {
+        let (_dir, db) = create_test_db();
+
+        let stem = Stem::new([7u8; STEM_LEN]);
+        let address = Address::repeat_byte(0x42);
+
+        db.save_stem_address(&stem, &address).unwrap();
+        let loaded = db.load_stem_address(&stem).unwrap().unwrap();
+
+        assert_eq!(loaded, address);
+    }
+
+    #[test]
+    fn test_stem_address_not_found() {
+        let (_dir, db) = create_test_db();
+
+        let stem = Stem::new([8u8; STEM_LEN]);
+        let loaded = db.load_stem_address(&stem).unwrap();
+
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_batch_save_stem_addresses() {
+        let (_dir, db) = create_test_db();
+
+        let stem1 = Stem::new([9u8; STEM_LEN]);
+        let stem2 = Stem::new([10u8; STEM_LEN]);
+        let address1 = Address::repeat_byte(0x11);
+        let address2 = Address::repeat_byte(0x22);
+
+        db.batch_save_stem_addresses(&[(stem1, address1), (stem2, address2)])
+            .unwrap();
+
+        assert_eq!(db.load_stem_address(&stem1).unwrap().unwrap(), address1);
+        assert_eq!(db.load_stem_address(&stem2).unwrap().unwrap(), address2);
     }
 }

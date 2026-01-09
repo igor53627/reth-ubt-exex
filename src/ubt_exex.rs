@@ -27,11 +27,12 @@
 //! Deltas are pruned after `delta_retention` blocks to bound storage growth.
 
 use alloy_eips::BlockNumHash;
-use alloy_primitives::{B256, U256};
+use alloy_primitives::{Address, B256, U256};
 use futures::TryStreamExt;
+use reth_chainspec::EthChainSpec;
 use reth_ethereum::exex::{ExExContext, ExExEvent, ExExHead, ExExNotification};
-use reth_exex::ExExNotificationsStream;
 use reth_execution_types::Chain;
+use reth_exex::ExExNotificationsStream;
 use reth_node_api::FullNodeComponents;
 use reth_primitives_traits::{AlloyBlockHeader as _, NodePrimitives};
 use std::{collections::HashMap, time::Instant};
@@ -40,20 +41,37 @@ use ubt::{
     chunkify_code, get_basic_data_key, get_code_chunk_key, get_code_hash_key, get_storage_slot_key,
     BasicDataLeaf, Blake3Hasher, Stem, StemNode, StreamingTreeBuilder, TreeKey,
 };
+use nomt::{Nomt, Options as NomtOptions, KeyReadWrite};
+use nomt::trie::KeyPath;
+use nomt::hasher::Blake3Hasher as NomtBlake3Hasher;
 
 use crate::config::UbtConfig;
 use crate::error::Result;
+use crate::key_index::{KeyIndex, KEY_INDEX_FILE};
 use crate::persistence::{UbtDatabase, UbtHead};
+use crate::rpc::UbtRpc;
+use crate::rpc_server::{start_rpc_servers, RpcServerConfig};
 
 const UBT_DATA_DIR: &str = "ubt";
+const NOMT_DATA_DIR: &str = "nomt";
+const NOMT_HEAD_KEY: KeyPath = [0xff; 32];
+
+#[derive(Debug, Clone)]
+pub struct PendingEntry {
+    pub key: TreeKey,
+    pub value: B256,
+    pub address: Address,
+}
 
 pub struct UbtExEx {
     pub(crate) db: UbtDatabase,
     last_block: u64,
     last_hash: B256,
     last_root: B256,
-    pub(crate) pending_entries: Vec<(TreeKey, B256)>,
+    pub(crate) pending_entries: Vec<PendingEntry>,
     pub(crate) dirty_stems: HashMap<Stem, StemNode>,
+    pub(crate) nomt: Nomt<NomtBlake3Hasher>,
+    pub(crate) key_index: KeyIndex,
     flush_interval: u64,
     delta_retention: u64,
     last_persisted_block: u64,
@@ -72,43 +90,84 @@ impl UbtExEx {
         let db = UbtDatabase::open(&ubt_dir)?;
         let flush_interval = config.get_flush_interval();
         let delta_retention = config.get_delta_retention();
+        let key_index = KeyIndex::open(data_dir.join(KEY_INDEX_FILE))?;
 
-        let (last_block, last_hash, last_root, last_persisted_block, last_persisted_hash, stem_count) =
-            if let Some(head) = db.load_head()? {
-                info!(
-                    block = head.block_number,
-                    root = %head.root,
-                    stems = head.stem_count,
-                    "Resuming UBT state from MDBX (not loading full tree)"
-                );
+        let (
+            last_block,
+            last_hash,
+            last_root,
+            mut last_persisted_block,
+            last_persisted_hash,
+            stem_count,
+        ) = if let Some(head) = db.load_head()? {
+            info!(
+                block = head.block_number,
+                root = %head.root,
+                stems = head.stem_count,
+                "Resuming UBT state from MDBX (not loading full tree)"
+            );
 
-                info!("Verifying UBT root via streaming; this may take a while on large state");
-                let computed = Self::compute_root_from_db(&db)?;
-                if computed == head.root {
-                    info!("Streaming root verification passed");
-                } else {
-                    return Err(crate::error::UbtError::RootVerificationFailed {
-                        expected: format!("{}", head.root),
-                        computed: format!("{}", computed),
-                    });
-                }
-
-                (
-                    head.block_number,
-                    head.block_hash,
-                    head.root,
-                    head.block_number,
-                    head.block_hash,
-                    head.stem_count,
-                )
+            info!("Verifying UBT root via streaming; this may take a while on large state");
+            let computed = Self::compute_root_from_db(&db)?;
+            if computed == head.root {
+                info!("Streaming root verification passed");
             } else {
-                info!("Starting fresh UBT state");
-                (0, B256::ZERO, B256::ZERO, 0, B256::ZERO, 0)
-            };
+                return Err(crate::error::UbtError::RootVerificationFailed {
+                    expected: format!("{}", head.root),
+                    computed: format!("{}", computed),
+                });
+            }
+
+            (
+                head.block_number,
+                head.block_hash,
+                head.root,
+                head.block_number,
+                head.block_hash,
+                head.stem_count,
+            )
+        } else {
+            info!("Starting fresh UBT state");
+            (0, B256::ZERO, B256::ZERO, 0, B256::ZERO, 0)
+        };
+
+        // Initialize NOMT
+        let nomt_dir = data_dir.join(NOMT_DATA_DIR);
+        let mut nomt_opts = NomtOptions::new();
+        nomt_opts.path(nomt_dir);
+        nomt_opts.rollback(true);
+        // Adjust these based on requirements
+        nomt_opts.commit_concurrency(1);
+        
+        let nomt = Nomt::open(nomt_opts).map_err(|e| crate::error::UbtError::Database(crate::error::DatabaseError::Mdbx(e.to_string())))?;
+
+        // Sync logic: Check NOMT head
+        let nomt_head_block = if let Ok(Some(val)) = nomt.read(NOMT_HEAD_KEY) {
+             u64::from_be_bytes(val.try_into().unwrap_or([0; 8]))
+        } else {
+             0
+        };
+
+        info!(nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "Checking NOMT/MDBX sync");
+
+        if nomt_head_block > last_persisted_block {
+            let diff = nomt_head_block - last_persisted_block;
+            warn!(diff, nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "NOMT is ahead of MDBX, rolling back");
+            if let Err(e) = nomt.rollback(diff as usize) {
+                 warn!("NOMT rollback failed (possibly not enough history): {}. Proceeding with potential overwrite.", e);
+            } else {
+                info!("NOMT rollback successful");
+            }
+        } else if nomt_head_block < last_persisted_block {
+             warn!(nomt_head = nomt_head_block, mdbx_head = last_persisted_block, "NOMT is behind MDBX. Will re-process blocks to catch up.");
+             // Force re-processing from NOMT head
+             last_persisted_block = nomt_head_block;
+        }
 
         info!(
             flush_interval = flush_interval,
             delta_retention = delta_retention,
+            effective_head = last_persisted_block,
             "UBT flush interval configured"
         );
 
@@ -119,6 +178,8 @@ impl UbtExEx {
             last_root,
             pending_entries: Vec::new(),
             dirty_stems: HashMap::new(),
+            nomt,
+            key_index,
             flush_interval,
             delta_retention,
             last_persisted_block,
@@ -162,17 +223,29 @@ impl UbtExEx {
                 let basic_data =
                     BasicDataLeaf::new(info.nonce, balance_to_u128(info.balance), code_size);
                 let key = get_basic_data_key(&address);
-                self.pending_entries.push((key, basic_data.encode()));
+                self.pending_entries.push(PendingEntry {
+                    key,
+                    value: basic_data.encode(),
+                    address,
+                });
 
                 if info.code_hash != B256::ZERO && info.code_hash != KECCAK_EMPTY {
                     let code_hash_key = get_code_hash_key(&address);
-                    self.pending_entries.push((code_hash_key, info.code_hash));
+                    self.pending_entries.push(PendingEntry {
+                        key: code_hash_key,
+                        value: info.code_hash,
+                        address,
+                    });
 
                     if let Some(code) = &info.code {
                         let chunks = chunkify_code(code.original_byte_slice());
                         for (i, chunk) in chunks.iter().enumerate() {
                             let chunk_key = get_code_chunk_key(&address, i as u64);
-                            self.pending_entries.push((chunk_key, chunk.encode()));
+                            self.pending_entries.push(PendingEntry {
+                                key: chunk_key,
+                                value: chunk.encode(),
+                                address,
+                            });
                         }
                     }
                 }
@@ -182,7 +255,11 @@ impl UbtExEx {
                 let slot_bytes = u256_to_b256((*slot).into());
                 let value_bytes = u256_to_b256(value.present_value);
                 let storage_key = get_storage_slot_key(&address, &slot_bytes.0);
-                self.pending_entries.push((storage_key, value_bytes));
+                self.pending_entries.push(PendingEntry {
+                    key: storage_key,
+                    value: value_bytes,
+                    address,
+                });
             }
         }
 
@@ -199,16 +276,39 @@ impl UbtExEx {
         let entries = std::mem::take(&mut self.pending_entries);
         let entry_count = entries.len();
 
-        let mut deltas: Vec<(Stem, u8, B256)> = Vec::new();
-        let mut seen_new_stems: std::collections::HashSet<Stem> = std::collections::HashSet::new();
+        // Update NOMT
+        {
+            let mut nomt_updates: Vec<(KeyPath, KeyReadWrite)> = Vec::with_capacity(entry_count + 1);
+            for entry in &entries {
+                let key_path = tree_index_from_key(&entry.key.stem, entry.key.subindex);
+                nomt_updates.push((key_path, KeyReadWrite::Write(Some(entry.value.0.to_vec()))));
+            }
+            nomt_updates.push((NOMT_HEAD_KEY, KeyReadWrite::Write(Some(block_number.to_be_bytes().to_vec()))));
+            nomt_updates.sort_by(|a, b| a.0.cmp(&b.0));
 
-        for (key, value) in &entries {
+            let session = self.nomt.begin_session(Default::default());
+            for (path, _) in &nomt_updates {
+                session.warm_up(*path);
+            }
+            let finished = session.finish(nomt_updates).map_err(|e| crate::error::UbtError::Database(crate::error::DatabaseError::Mdbx(e.to_string())))?;
+            finished.commit(&self.nomt).map_err(|e| crate::error::UbtError::Database(crate::error::DatabaseError::Mdbx(e.to_string())))?;
+        }
+
+        let mut deltas: Vec<(Stem, u8, B256)> = Vec::new();
+        let mut new_stem_addresses: Vec<(Stem, Address)> = Vec::new();
+
+        for PendingEntry {
+            key,
+            value,
+            address,
+        } in &entries
+        {
             if !self.dirty_stems.contains_key(&key.stem) {
                 if let Some(existing) = self.db.load_stem(&key.stem)? {
                     self.dirty_stems.insert(key.stem, existing);
                 } else {
-                    seen_new_stems.insert(key.stem);
                     self.dirty_stems.insert(key.stem, StemNode::new(key.stem));
+                    new_stem_addresses.push((key.stem, *address));
                 }
             }
 
@@ -222,7 +322,16 @@ impl UbtExEx {
             stem_node.set_value(key.subindex, *value);
         }
 
-        self.stem_count += seen_new_stems.len();
+        if !new_stem_addresses.is_empty() {
+            self.db.batch_save_stem_addresses(&new_stem_addresses)?;
+        }
+
+        let new_stems = self
+            .key_index
+            .apply_updates(entries.iter().map(|entry| {
+                (entry.key.stem, entry.key.subindex, entry.address)
+            }))?;
+        self.stem_count += new_stems;
 
         if !deltas.is_empty() {
             self.db.save_block_deltas(block_number, &deltas)?;
@@ -253,6 +362,8 @@ impl UbtExEx {
                 stem_count: self.stem_count,
             };
             self.db.save_head(&head)?;
+            self.key_index
+                .save_head(block_number, block_hash, root, self.stem_count as u64)?;
             crate::metrics::record_persistence(persist_start.elapsed().as_secs_f64(), dirty_count);
             crate::metrics::record_dirty_stems(0);
 
@@ -273,7 +384,11 @@ impl UbtExEx {
                 let prune_before = block_number - self.delta_retention;
                 match self.db.prune_deltas_before(prune_before) {
                     Ok(count) if count > 0 => {
-                        debug!(pruned = count, before_block = prune_before, "Pruned old deltas");
+                        debug!(
+                            pruned = count,
+                            before_block = prune_before,
+                            "Pruned old deltas"
+                        );
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to prune old deltas");
@@ -290,7 +405,8 @@ impl UbtExEx {
                 block = block_number,
                 entries = entry_count,
                 pending_stems = self.dirty_stems.len(),
-                blocks_until_flush = self.flush_interval - (block_number - self.last_persisted_block),
+                blocks_until_flush =
+                    self.flush_interval - (block_number - self.last_persisted_block),
                 "UBT updated in-memory (pending flush)"
             );
 
@@ -312,6 +428,14 @@ impl UbtExEx {
         let mut block_numbers: Vec<u64> = blocks.keys().copied().collect();
         block_numbers.sort();
         block_numbers.reverse();
+
+        // NOMT Rollback
+        if !block_numbers.is_empty() {
+             info!(count = block_numbers.len(), "Rolling back NOMT state");
+             if let Err(e) = self.nomt.rollback(block_numbers.len()) {
+                 warn!(error = %e, "Failed to rollback NOMT");
+             }
+        }
 
         let mut total_reverted = 0usize;
         let mut reverted_persisted = false;
@@ -335,7 +459,9 @@ impl UbtExEx {
             }
         }
 
-        if let Some((&first_reverted_num, first_reverted_block)) = blocks.iter().min_by_key(|(num, _)| *num) {
+        if let Some((&first_reverted_num, first_reverted_block)) =
+            blocks.iter().min_by_key(|(num, _)| *num)
+        {
             if first_reverted_num > 0 {
                 self.last_block = first_reverted_num - 1;
                 self.last_hash = first_reverted_block.header().parent_hash();
@@ -455,10 +581,7 @@ impl UbtExEx {
     /// This is the core logic shared by revert operations. Given a list of deltas
     /// (stem, subindex, old_value), applies them in reverse order to restore
     /// previous values.
-    pub(crate) fn apply_deltas_reverse(
-        &mut self,
-        deltas: &[(Stem, u8, B256)],
-    ) -> Result<()> {
+    pub(crate) fn apply_deltas_reverse(&mut self, deltas: &[(Stem, u8, B256)]) -> Result<()> {
         for (stem, subindex, old_value) in deltas.iter().rev() {
             if !self.dirty_stems.contains_key(stem) {
                 if let Some(existing) = self.db.load_stem(stem)? {
@@ -512,6 +635,34 @@ pub async fn ubt_exex<Node: FullNodeComponents>(mut ctx: ExExContext<Node>) -> e
     let mut ubt = UbtExEx::new(&config)?;
 
     info!("UBT ExEx started with MDBX persistence");
+
+    let rpc_config = RpcServerConfig {
+        http_addr: config.get_rpc_http_addr(),
+        ipc_path: config.get_rpc_ipc_path(),
+    };
+    if rpc_config.http_addr.is_some() || rpc_config.ipc_path.is_some() {
+        let chain_id = ctx.config.chain.chain().id();
+        let base_dir = config.get_data_dir();
+        let ubt_dir = base_dir.join(UBT_DATA_DIR);
+        let nomt_dir = base_dir.join(NOMT_DATA_DIR);
+        let key_index_path = base_dir.join(KEY_INDEX_FILE);
+        match UbtRpc::from_paths(
+            ubt_dir,
+            nomt_dir,
+            key_index_path,
+            chain_id,
+            config.get_delta_retention(),
+        ) {
+            Ok(rpc) => {
+                if let Err(err) = start_rpc_servers(ctx.task_executor().clone(), rpc, rpc_config).await {
+                    warn!(error = %err, "Failed to start UBT RPC servers");
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "Failed to initialize UBT RPC");
+            }
+        }
+    }
 
     if let Some(head) = ubt.get_head() {
         info!(
@@ -596,6 +747,13 @@ async fn sigterm_recv() {
     std::future::pending::<()>().await;
 }
 
+fn tree_index_from_key(stem: &Stem, subindex: u8) -> [u8; 32] {
+    let mut tree_index = [0u8; 32];
+    tree_index[..31].copy_from_slice(stem.as_bytes());
+    tree_index[31] = subindex;
+    tree_index
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -628,14 +786,20 @@ pub mod tests {
         /// Apply entries for a block and commit, returning the root hash.
         ///
         /// Adds the given entries to pending_entries and calls commit with the
-        /// specified block number and hash.
+        /// specified block number and hash. Uses Address::ZERO for testing.
         pub fn apply_entries_block(
             &mut self,
             block_number: u64,
             block_hash: B256,
             entries: Vec<(TreeKey, B256)>,
         ) -> B256 {
-            self.exex.pending_entries.extend(entries);
+            self.exex
+                .pending_entries
+                .extend(entries.into_iter().map(|(key, value)| PendingEntry {
+                    key,
+                    value,
+                    address: Address::ZERO,
+                }));
             self.exex
                 .commit(block_number, block_hash)
                 .expect("commit failed")

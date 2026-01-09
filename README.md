@@ -85,6 +85,25 @@ cargo build --release
 RETH_DATA_DIR=/path/to/data ./target/release/ubt-exex node --chain sepolia
 ```
 
+### RPC (IPC + HTTP)
+
+By default the RPC server is enabled on:
+- IPC socket: `/tmp/ubt-exex.ipc`
+- HTTP: `127.0.0.1:9845`
+
+Override or disable with env vars:
+```bash
+# Override IPC path
+UBT_RPC_IPC_PATH=/tmp/ubt.ipc ./target/release/ubt-exex node --chain sepolia
+
+# Override HTTP addr
+UBT_RPC_HTTP_ADDR=127.0.0.1:9545 ./target/release/ubt-exex node --chain sepolia
+
+# Disable one transport
+UBT_RPC_HTTP_ADDR=off ./target/release/ubt-exex node --chain sepolia
+UBT_RPC_IPC_PATH=off  ./target/release/ubt-exex node --chain sepolia
+```
+
 ### Output
 
 The plugin persists UBT state to MDBX database at `$RETH_DATA_DIR/ubt/`:

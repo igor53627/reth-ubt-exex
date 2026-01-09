@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- PIR state export RPC endpoints (#31)
+  - `ubt_exportState`: Export full UBT state to PIR2 format for inspire-exex
+  - `ubt_exportContract`: Export single contract state
+  - `ubt_getStateDelta`: Get state changes for block range (incremental PIR updates)
+  - `ubt_getRoot`: Get current UBT root hash and block info
+- JSON-RPC server wiring with IPC (default `/tmp/ubt-exex.ipc`) and localhost HTTP
+- Criterion benchmarks for MDBX persistence performance
+- Stem-to-address reverse mapping table (`ubt_stem_addresses`)
+  - Enables recovery of address from stem for PIR2 export
+  - Populated automatically for new stems during commit
+- `PendingEntry` struct for tracking address with tree entries
+- PIR2 format export module (`pir_export.rs`)
+  - StateHeader (64 bytes): magic, version, entry count, block info
+  - StorageEntry (84 bytes): address, tree_index, value
+  - Stem index file for O(log N) lookups
+
 ### Fixed
 - Critical bug: dirty overlay now seeds from MDBX before mutation (#27)
   - Previously, updating a stem not in dirty_stems created an empty StemNode
